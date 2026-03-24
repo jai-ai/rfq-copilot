@@ -12,8 +12,66 @@ st.markdown("*Procurement tool for RFQ generation, quote comparison, and award r
 
 section = st.sidebar.radio(
     "Navigate",
-    ["📋 RFQ Generator", "📊 Quote Comparison", "🏆 Award & Risk"]
+    [
+        "📋 RFQ Generator",
+        "📊 Quote Comparison",
+        "🏆 Award & Risk",
+        "📈 Sourcing Summary",
+        "📊 Supplier Scorecard",
+    ],
 )
+
+# Helper function used by Sourcing Summary
+def compute_award_df(quotes_df, annual_volume, priority):
+    df = quotes_df.copy()
+    for col in ["Unit_price", "Tooling_cost", "Freight_cost", "Other_charges"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    df["Total_material_cost"] = df["Unit_price"] * annual_volume
+    df["Total_landed_cost"] = (
+        df["Total_material_cost"]
+        + df["Tooling_cost"]
+        + df["Freight_cost"]
+        + df["Other_charges"]
+    )
+
+    results = []
+    for item_id in df["Item_ID"].unique():
+        item_df = df[df["Item_ID"] == item_id].copy()
+
+        max_cost = item_df["Total_landed_cost"].max()
+        min_cost = item_df["Total_landed_cost"].min()
+        if max_cost != min_cost:
+            item_df["cost_score"] = 1 - (
+                (item_df["Total_landed_cost"] - min_cost) / (max_cost - min_cost)
+            )
+        else:
+            item_df["cost_score"] = 1.0
+
+        max_lead_item = item_df["Lead_time_weeks"].max()
+        min_lead_item = item_df["Lead_time_weeks"].min()
+        if max_lead_item != min_lead_item:
+            item_df["lead_score"] = 1 - (
+                (item_df["Lead_time_weeks"] - min_lead_item) / (max_lead_item - min_lead_item)
+            )
+        else:
+            item_df["lead_score"] = 1.0
+
+        item_df["final_score"] = priority * item_df["cost_score"] + (1 - priority) * item_df["lead_score"]
+        winner = item_df.loc[item_df["final_score"].idxmax()]
+        results.append({
+            "Item_ID": item_id,
+            "Supplier": winner["Supplier"],
+            "Total_landed_cost": winner["Total_landed_cost"],
+            "Lead_time_weeks": winner["Lead_time_weeks"],
+            "MOQ": winner["MOQ"],
+            "Payment_terms": winner["Payment_terms"],
+            "Final_score": round(winner["final_score"], 3),
+        })
+
+    award_df = pd.DataFrame(results)
+    return df, award_df
+
 
 # ==============================
 # SECTION 1 – RFQ GENERATOR
@@ -90,20 +148,15 @@ Best regards,
 
 elif section == "📊 Quote Comparison":
     st.header("📊 Quote Comparison")
-    st.markdown("Enter supplier quotes below. The copilot will calculate total landed cost automatically.")
+
+    mode = st.radio(
+        "How do you want to provide quotes?",
+        ["Enter manually", "Upload CSV"]
+    )
 
     annual_volume = st.number_input("Annual Volume (pcs)", value=50000, step=1000)
 
-    st.subheader("Supplier Quotes")
-    default_quotes = pd.DataFrame([
-        {"Supplier": "Supplier A", "Item_ID": "ITEM-001", "Unit_price": 4.20, "Tooling_cost": 5000, "Freight_cost": 1200, "Other_charges": 0, "MOQ": 5000, "Lead_time_weeks": 7, "Payment_terms": "Net 45"},
-        {"Supplier": "Supplier B", "Item_ID": "ITEM-001", "Unit_price": 4.05, "Tooling_cost": 6500, "Freight_cost": 1500, "Other_charges": 0, "MOQ": 6000, "Lead_time_weeks": 9, "Payment_terms": "Net 30"},
-    ])
-
-    quotes_input = st.data_editor(default_quotes, num_rows="dynamic", use_container_width=True)
-
-    if st.button("Compare Quotes"):
-        df = quotes_input.copy()
+    def run_quote_comparison(df, annual_volume):
         for col in ["Unit_price", "Tooling_cost", "Freight_cost", "Other_charges"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
@@ -116,17 +169,68 @@ elif section == "📊 Quote Comparison":
         )
 
         st.success("Quote Comparison Complete!")
-        st.dataframe(df[["Supplier", "Item_ID", "Unit_price", "Tooling_cost", "Freight_cost",
-                          "MOQ", "Lead_time_weeks", "Payment_terms",
-                          "Total_material_cost", "Total_landed_cost"]], use_container_width=True)
+        st.dataframe(
+            df[
+                [
+                    "Supplier",
+                    "Item_ID",
+                    "Unit_price",
+                    "Tooling_cost",
+                    "Freight_cost",
+                    "MOQ",
+                    "Lead_time_weeks",
+                    "Payment_terms",
+                    "Total_material_cost",
+                    "Total_landed_cost",
+                ]
+            ],
+            use_container_width=True,
+        )
 
         best_cost = df.loc[df["Total_landed_cost"].idxmin()]
         best_lead = df.loc[df["Lead_time_weeks"].idxmin()]
 
         st.subheader("Copilot Insights")
-        st.info(f"💰 Lowest total landed cost: **{best_cost['Supplier']}** (${best_cost['Total_landed_cost']:,.2f})")
-        st.info(f"⚡ Shortest lead time: **{best_lead['Supplier']}** ({best_lead['Lead_time_weeks']} weeks)")
-        st.warning("Consider trade-offs between cost, lead time, payment terms, and MOQs before final award.")
+        st.info(
+            f"💰 Lowest total landed cost: **{best_cost['Supplier']}** (${best_cost['Total_landed_cost']:,.2f})"
+        )
+        st.info(
+            f"⚡ Shortest lead time: **{best_lead['Supplier']}** ({best_lead['Lead_time_weeks']} weeks)"
+        )
+        st.warning(
+            "Consider trade-offs between cost, lead time, payment terms, and MOQs before final award."
+        )
+
+    if mode == "Enter manually":
+        st.subheader("Supplier Quotes (manual entry)")
+
+        default_quotes = pd.DataFrame([
+            {"Supplier": "Supplier A", "Item_ID": "ITEM-001", "Unit_price": 4.20, "Tooling_cost": 5000, "Freight_cost": 1200, "Other_charges": 0, "MOQ": 5000, "Lead_time_weeks": 7, "Payment_terms": "Net 45"},
+            {"Supplier": "Supplier B", "Item_ID": "ITEM-001", "Unit_price": 4.05, "Tooling_cost": 6500, "Freight_cost": 1500, "Other_charges": 0, "MOQ": 6000, "Lead_time_weeks": 9, "Payment_terms": "Net 30"},
+        ])
+
+        quotes_input = st.data_editor(default_quotes, num_rows="dynamic", use_container_width=True)
+
+        if st.button("Compare Quotes (manual)"):
+            run_quote_comparison(quotes_input.copy(), annual_volume)
+
+    elif mode == "Upload CSV":
+        st.subheader("Upload Supplier Quotes (CSV)")
+        st.caption(
+            "Template columns: Supplier, Item_ID, Unit_price, Tooling_cost, "
+            "Freight_cost, Other_charges, MOQ, Lead_time_weeks, Payment_terms"
+        )
+
+        uploaded_file = st.file_uploader("Upload quote file", type=["csv"])
+
+        if uploaded_file is not None:
+            quotes_input = pd.read_csv(uploaded_file)
+            st.dataframe(quotes_input, use_container_width=True)
+
+            if st.button("Compare Quotes (from file)"):
+                run_quote_comparison(quotes_input.copy(), annual_volume)
+        else:
+            st.info("Upload a CSV file to enable file-based comparison.")
 
 # ==============================
 # SECTION 3 – AWARD & RISK
@@ -136,8 +240,16 @@ elif section == "🏆 Award & Risk":
     st.header("🏆 Award Recommendation & Risk Flags")
     st.markdown("Set your priority and thresholds. The copilot will recommend which supplier gets each item.")
 
-    priority = st.slider("Priority: Cost vs Speed", 0.0, 1.0, 0.5,
-                         help="1.0 = pure cost focus | 0.0 = pure speed focus | 0.5 = balanced")
+    mode = st.radio(
+        "How do you want to provide quotes for award?",
+        ["Enter manually", "Upload CSV"]
+    )
+
+    priority = st.slider(
+        "Priority: Cost vs Speed",
+        0.0, 1.0, 0.5,
+        help="1.0 = pure cost focus | 0.0 = pure speed focus | 0.5 = balanced"
+    )
 
     st.subheader("Risk Thresholds")
     col1, col2, col3 = st.columns(3)
@@ -150,20 +262,8 @@ elif section == "🏆 Award & Risk":
 
     annual_volume = st.number_input("Annual Volume (pcs)", value=50000, step=1000)
 
-    st.subheader("Supplier Quotes")
-    default_quotes = pd.DataFrame([
-        {"Supplier": "Supplier A", "Item_ID": "ITEM-001", "Unit_price": 4.20, "Tooling_cost": 5000, "Freight_cost": 1200, "Other_charges": 0, "MOQ": 5000, "Lead_time_weeks": 7, "Payment_terms": "Net 45"},
-        {"Supplier": "Supplier A", "Item_ID": "ITEM-002", "Unit_price": 3.10, "Tooling_cost": 3000, "Freight_cost": 800,  "Other_charges": 0, "MOQ": 3000, "Lead_time_weeks": 6, "Payment_terms": "Net 45"},
-        {"Supplier": "Supplier A", "Item_ID": "ITEM-003", "Unit_price": 0.85, "Tooling_cost": 1500, "Freight_cost": 500,  "Other_charges": 0, "MOQ": 10000,"Lead_time_weeks": 5, "Payment_terms": "Net 45"},
-        {"Supplier": "Supplier B", "Item_ID": "ITEM-001", "Unit_price": 4.05, "Tooling_cost": 6500, "Freight_cost": 1500, "Other_charges": 0, "MOQ": 6000, "Lead_time_weeks": 9, "Payment_terms": "Net 30"},
-        {"Supplier": "Supplier B", "Item_ID": "ITEM-002", "Unit_price": 2.95, "Tooling_cost": 3500, "Freight_cost": 900,  "Other_charges": 0, "MOQ": 4000, "Lead_time_weeks": 8, "Payment_terms": "Net 30"},
-        {"Supplier": "Supplier B", "Item_ID": "ITEM-003", "Unit_price": 0.80, "Tooling_cost": 2000, "Freight_cost": 600,  "Other_charges": 0, "MOQ": 12000,"Lead_time_weeks": 7, "Payment_terms": "Net 30"},
-    ])
-
-    quotes_input = st.data_editor(default_quotes, num_rows="dynamic", use_container_width=True)
-
-    if st.button("Get Award Recommendation"):
-        df = quotes_input.copy()
+    def run_award_and_risk(quotes_df):
+        df = quotes_df.copy()
         for col in ["Unit_price", "Tooling_cost", "Freight_cost", "Other_charges"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
@@ -179,11 +279,21 @@ elif section == "🏆 Award & Risk":
 
             max_cost = item_df["Total_landed_cost"].max()
             min_cost = item_df["Total_landed_cost"].min()
-            item_df["cost_score"] = 1 - ((item_df["Total_landed_cost"] - min_cost) / (max_cost - min_cost)) if max_cost != min_cost else 1.0
+            if max_cost != min_cost:
+                item_df["cost_score"] = 1 - (
+                    (item_df["Total_landed_cost"] - min_cost) / (max_cost - min_cost)
+                )
+            else:
+                item_df["cost_score"] = 1.0
 
-            max_lead = item_df["Lead_time_weeks"].max()
-            min_lead = item_df["Lead_time_weeks"].min()
-            item_df["lead_score"] = 1 - ((item_df["Lead_time_weeks"] - min_lead) / (max_lead - min_lead)) if max_lead != min_lead else 1.0
+            max_lead_item = item_df["Lead_time_weeks"].max()
+            min_lead_item = item_df["Lead_time_weeks"].min()
+            if max_lead_item != min_lead_item:
+                item_df["lead_score"] = 1 - (
+                    (item_df["Lead_time_weeks"] - min_lead_item) / (max_lead_item - min_lead_item)
+                )
+            else:
+                item_df["lead_score"] = 1.0
 
             item_df["final_score"] = priority * item_df["cost_score"] + (1 - priority) * item_df["lead_score"]
             winner = item_df.loc[item_df["final_score"].idxmax()]
@@ -211,8 +321,8 @@ elif section == "🏆 Award & Risk":
             if row["Lead_time_weeks"] > max_lead:
                 flags.append(f"⚠ LONG LEAD TIME: {row['Lead_time_weeks']} weeks (threshold: {max_lead} weeks) – risk of program delay.")
             try:
-                payment_days = int(''.join(filter(str.isdigit, str(row["Payment_terms"]))))
-            except:
+                payment_days = int("".join(filter(str.isdigit, str(row["Payment_terms"]))))
+            except Exception:
                 payment_days = std_payment
             if payment_days < std_payment:
                 flags.append(f"⚠ TIGHT PAYMENT TERMS: {row['Payment_terms']} (standard: Net {std_payment}) – cash flow risk.")
@@ -223,3 +333,224 @@ elif section == "🏆 Award & Risk":
                     st.warning(f)
             else:
                 st.success(f"**{row['Item_ID']} → {row['Recommended_Supplier']}**: ✅ No risks flagged.")
+
+    if mode == "Enter manually":
+        st.subheader("Supplier Quotes for Award (manual entry)")
+        default_quotes = pd.DataFrame([
+            {"Supplier": "Supplier A", "Item_ID": "ITEM-001", "Unit_price": 4.20, "Tooling_cost": 5000, "Freight_cost": 1200, "Other_charges": 0, "MOQ": 5000, "Lead_time_weeks": 7, "Payment_terms": "Net 45"},
+            {"Supplier": "Supplier A", "Item_ID": "ITEM-002", "Unit_price": 3.10, "Tooling_cost": 3000, "Freight_cost": 800,  "Other_charges": 0, "MOQ": 3000, "Lead_time_weeks": 6, "Payment_terms": "Net 45"},
+            {"Supplier": "Supplier A", "Item_ID": "ITEM-003", "Unit_price": 0.85, "Tooling_cost": 1500, "Freight_cost": 500,  "Other_charges": 0, "MOQ": 10000,"Lead_time_weeks": 5, "Payment_terms": "Net 45"},
+            {"Supplier": "Supplier B", "Item_ID": "ITEM-001", "Unit_price": 4.05, "Tooling_cost": 6500, "Freight_cost": 1500, "Other_charges": 0, "MOQ": 6000, "Lead_time_weeks": 9, "Payment_terms": "Net 30"},
+            {"Supplier": "Supplier B", "Item_ID": "ITEM-002", "Unit_price": 2.95, "Tooling_cost": 3500, "Freight_cost": 900,  "Other_charges": 0, "MOQ": 4000, "Lead_time_weeks": 8, "Payment_terms": "Net 30"},
+            {"Supplier": "Supplier B", "Item_ID": "ITEM-003", "Unit_price": 0.80, "Tooling_cost": 2000, "Freight_cost": 600,  "Other_charges": 0, "MOQ": 12000,"Lead_time_weeks": 7, "Payment_terms": "Net 30"},
+        ])
+
+        quotes_input = st.data_editor(default_quotes, num_rows="dynamic", use_container_width=True)
+
+        if st.button("Get Award Recommendation (manual)"):
+            run_award_and_risk(quotes_input)
+
+    elif mode == "Upload CSV":
+        st.subheader("Upload Supplier Quotes for Award (CSV)")
+        st.caption(
+            "Template columns: Supplier, Item_ID, Unit_price, Tooling_cost, "
+            "Freight_cost, Other_charges, MOQ, Lead_time_weeks, Payment_terms"
+        )
+
+        uploaded_file = st.file_uploader("Upload quote file for award", type=["csv"], key="award_upload")
+
+        if uploaded_file is not None:
+            quotes_input = pd.read_csv(uploaded_file)
+            st.dataframe(quotes_input, use_container_width=True)
+
+            if st.button("Get Award Recommendation (from file)"):
+                run_award_and_risk(quotes_input)
+        else:
+            st.info("Upload a CSV file to enable file-based award recommendation.")
+
+# ==============================
+# SECTION 4 – SOURCING SUMMARY
+# ==============================
+
+elif section == "📈 Sourcing Summary":
+    st.header("📈 Sourcing Summary Dashboard")
+
+    st.markdown(
+        "High-level view of RFQ outcome: savings, supplier split, and cost vs lead time."
+    )
+
+    annual_volume = st.number_input("Annual Volume (pcs)", value=50000, step=1000)
+    priority = st.slider(
+        "Priority used for award (for scoring reference only)",
+        0.0, 1.0, 0.5,
+        help="1.0 = pure cost focus | 0.0 = pure speed focus | 0.5 = balanced"
+    )
+
+    # Default data (can be overridden by CSV upload)
+    default_quotes = pd.DataFrame([
+        {"Supplier": "Supplier A", "Item_ID": "ITEM-001", "Unit_price": 4.20, "Tooling_cost": 5000, "Freight_cost": 1200, "Other_charges": 0, "MOQ": 5000, "Lead_time_weeks": 7, "Payment_terms": "Net 45"},
+        {"Supplier": "Supplier A", "Item_ID": "ITEM-002", "Unit_price": 3.10, "Tooling_cost": 3000, "Freight_cost": 800,  "Other_charges": 0, "MOQ": 3000, "Lead_time_weeks": 6, "Payment_terms": "Net 45"},
+        {"Supplier": "Supplier B", "Item_ID": "ITEM-001", "Unit_price": 4.05, "Tooling_cost": 6500, "Freight_cost": 1500, "Other_charges": 0, "MOQ": 6000, "Lead_time_weeks": 9, "Payment_terms": "Net 30"},
+        {"Supplier": "Supplier B", "Item_ID": "ITEM-002", "Unit_price": 2.95, "Tooling_cost": 3500, "Freight_cost": 900,  "Other_charges": 0, "MOQ": 4000, "Lead_time_weeks": 8, "Payment_terms": "Net 30"},
+    ])
+
+    st.subheader("Quotes used for dashboard")
+
+    uploaded_summary = st.file_uploader(
+        "Upload quotes CSV for dashboard (optional)",
+        type=["csv"],
+        key="summary_upload",
+    )
+
+    if uploaded_summary is not None:
+        quotes_input = pd.read_csv(uploaded_summary)
+        st.caption("Using uploaded CSV for dashboard. You can still edit below.")
+    else:
+        quotes_input = default_quotes.copy()
+        st.caption("Using default sample data. Upload a CSV to override.")
+
+    with st.expander("View / adjust quote data used for dashboard"):
+        quotes_input = st.data_editor(quotes_input, num_rows="dynamic", use_container_width=True)
+
+    base_price = st.number_input(
+        "Baseline unit price (for savings calc, e.g., incumbent price)",
+        value=4.50,
+        step=0.10
+    )
+
+    if st.button("Refresh Dashboard"):
+        full_df, award_df = compute_award_df(quotes_input, annual_volume, priority)
+
+        total_qty = annual_volume * award_df["Item_ID"].nunique()
+        baseline_cost = base_price * total_qty
+        awarded_cost = award_df["Total_landed_cost"].sum()
+        savings = baseline_cost - awarded_cost
+        savings_pct = (savings / baseline_cost * 100) if baseline_cost else 0
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Baseline Spend", f"${baseline_cost:,.0f}")
+        with col2:
+            st.metric("Awarded Spend", f"${awarded_cost:,.0f}")
+        with col3:
+            st.metric("Savings", f"${savings:,.0f}", f"{savings_pct:,.1f}%")
+
+        spend_by_supplier = award_df.groupby("Supplier")["Total_landed_cost"].sum().reset_index()
+        st.subheader("Spend by Supplier")
+        st.bar_chart(
+            data=spend_by_supplier.set_index("Supplier")["Total_landed_cost"]
+        )
+
+        st.subheader("Share of Business (Approx.)")
+        st.bar_chart(
+            data=(spend_by_supplier.set_index("Supplier")["Total_landed_cost"] / awarded_cost)
+        )
+
+        st.subheader("Cost vs Lead Time (Items)")
+        scatter_df = award_df[["Item_ID", "Total_landed_cost", "Lead_time_weeks", "Supplier"]]
+        st.dataframe(scatter_df, use_container_width=True)
+        st.caption("Use this table to discuss trade-offs between lead time and cost at item level.")
+    else:
+        st.info("Click 'Refresh Dashboard' to compute KPIs and charts.")
+
+
+# ==============================
+# SECTION 5 – SUPPLIER SCORECARD
+# ==============================
+
+elif section == "📊 Supplier Scorecard":
+    st.header("📊 Supplier Scorecard")
+
+    st.markdown(
+        "Combine commercial outcome with quality and delivery performance to rate suppliers."
+    )
+
+    st.subheader("Define weights for scorecard")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        w_cost = st.number_input("Weight: Cost", value=0.40, min_value=0.0, max_value=1.0, step=0.05)
+    with col2:
+        w_quality = st.number_input("Weight: Quality", value=0.25, min_value=0.0, max_value=1.0, step=0.05)
+    with col3:
+        w_delivery = st.number_input("Weight: Delivery", value=0.25, min_value=0.0, max_value=1.0, step=0.05)
+    with col4:
+        w_collab = st.number_input("Weight: Collaboration", value=0.10, min_value=0.0, max_value=1.0, step=0.05)
+
+    total_w = w_cost + w_quality + w_delivery + w_collab
+    if abs(total_w - 1.0) > 0.001:
+        st.warning(f"Current weights sum to {total_w:.2f}. Consider adjusting to 1.0 for clean interpretation.")
+
+    st.subheader("Supplier performance inputs")
+
+    # Default scorecard (can be overridden by CSV)
+    scorecard_default = pd.DataFrame([
+        {"Supplier": "Supplier A", "Cost_rating": 4, "Quality_rating": 4, "Delivery_rating": 5, "Collaboration_rating": 4, "Strategic_role": "Core"},
+        {"Supplier": "Supplier B", "Cost_rating": 5, "Quality_rating": 3, "Delivery_rating": 3, "Collaboration_rating": 3, "Strategic_role": "Backup"},
+    ])
+
+    uploaded_scorecard = st.file_uploader(
+        "Upload supplier scorecard CSV (optional)",
+        type=["csv"],
+        key="scorecard_upload",
+    )
+
+    if uploaded_scorecard is not None:
+        scorecard_input = pd.read_csv(uploaded_scorecard)
+        st.caption("Using uploaded CSV for scorecard. You can still edit below.")
+    else:
+        scorecard_input = scorecard_default.copy()
+        st.caption("Using default sample scorecard. Upload a CSV to override.")
+
+    scorecard_input = st.data_editor(
+        scorecard_input,
+        num_rows="dynamic",
+        use_container_width=True
+    )
+
+    if st.button("Calculate Supplier Scores"):
+        df = scorecard_input.copy()
+
+        for col in ["Cost_rating", "Quality_rating", "Delivery_rating", "Collaboration_rating"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        max_rating = 5.0
+        df["Cost_norm"] = df["Cost_rating"] / max_rating
+        df["Quality_norm"] = df["Quality_rating"] / max_rating
+        df["Delivery_norm"] = df["Delivery_rating"] / max_rating
+        df["Collab_norm"] = df["Collaboration_rating"] / max_rating
+
+        df["Total_score"] = (
+            w_cost * df["Cost_norm"]
+            + w_quality * df["Quality_norm"]
+            + w_delivery * df["Delivery_norm"]
+            + w_collab * df["Collab_norm"]
+        )
+
+        def band(score):
+            if score >= 0.80:
+                return "Preferred"
+            elif score >= 0.60:
+                return "Approved"
+            else:
+                return "Monitor / Develop"
+
+        df["Rating_band"] = df["Total_score"].apply(band)
+
+        st.subheader("Scorecard Results")
+        st.dataframe(
+            df[[
+                "Supplier",
+                "Strategic_role",
+                "Cost_rating",
+                "Quality_rating",
+                "Delivery_rating",
+                "Collaboration_rating",
+                "Total_score",
+                "Rating_band",
+            ]],
+            use_container_width=True,
+        )
+
+        st.caption("Use this table during QBRs and sourcing decisions to justify supplier positioning.")
+    else:
+        st.info("Adjust ratings and weights, then click 'Calculate Supplier Scores'.")
