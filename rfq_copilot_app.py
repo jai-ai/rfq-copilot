@@ -6,13 +6,10 @@ st.set_page_config(page_title="RFQ Copilot", page_icon="📋", layout="wide")
 st.title("📋 RFQ & Supplier Response Copilot")
 st.markdown("*Procurement tool for RFQ generation, quote comparison, and award recommendation.*")
 
-# ==============================
-# SIDEBAR – NAVIGATION
-# ==============================
-
 section = st.sidebar.radio(
     "Navigate",
     [
+        "📊 Dashboard",
         "📋 RFQ Generator",
         "📊 Quote Comparison",
         "🏆 Award & Risk",
@@ -71,6 +68,152 @@ def compute_award_df(quotes_df, annual_volume, priority):
 
     award_df = pd.DataFrame(results)
     return df, award_df
+
+# ==============================
+# SECTION 0 – DASHBOARD (SAMPLE DATA)
+# ==============================
+
+if section == "📊 Dashboard":
+    st.header("📊 RFQ Copilot Dashboard")
+    st.markdown(
+        "High-level view of quotes, awards, and spend using sample data for demo."
+    )
+
+    # ----- Sample data for dashboard -----
+    sample_quotes = pd.DataFrame(
+        [
+            {
+                "Supplier": "Supplier A",
+                "Item_ID": "ITEM-001",
+                "Unit_price": 4.20,
+                "Tooling_cost": 5000,
+                "Freight_cost": 1200,
+                "Other_charges": 0,
+                "MOQ": 5000,
+                "Lead_time_weeks": 7,
+                "Payment_terms": "Net 45",
+            },
+            {
+                "Supplier": "Supplier B",
+                "Item_ID": "ITEM-001",
+                "Unit_price": 4.05,
+                "Tooling_cost": 6500,
+                "Freight_cost": 1500,
+                "Other_charges": 0,
+                "MOQ": 6000,
+                "Lead_time_weeks": 9,
+                "Payment_terms": "Net 30",
+            },
+            {
+                "Supplier": "Supplier A",
+                "Item_ID": "ITEM-002",
+                "Unit_price": 3.10,
+                "Tooling_cost": 3000,
+                "Freight_cost": 800,
+                "Other_charges": 0,
+                "MOQ": 3000,
+                "Lead_time_weeks": 6,
+                "Payment_terms": "Net 45",
+            },
+            {
+                "Supplier": "Supplier B",
+                "Item_ID": "ITEM-002",
+                "Unit_price": 2.95,
+                "Tooling_cost": 3500,
+                "Freight_cost": 900,
+                "Other_charges": 0,
+                "MOQ": 4000,
+                "Lead_time_weeks": 8,
+                "Payment_terms": "Net 30",
+            },
+        ]
+    )
+
+    annual_volume = 50_000
+    priority = 0.5  # balanced cost vs speed
+
+    # Reuse your existing helper to compute award + costs
+    full_df, award_df = compute_award_df(sample_quotes, annual_volume, priority)
+
+    # ----- Top "instant quote" style card -----
+    st.subheader("Instant Quote Snapshot")
+
+    latest_item = award_df.iloc[0]
+    with st.container(border=True):
+        st.markdown(
+            f"**Quote for {latest_item['Item_ID']} – Recommended: {latest_item['Supplier']}**"
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Total landed cost", f"${latest_item['Total_landed_cost']:,.0f}")
+        with c2:
+            st.metric("Lead time", f"{latest_item['Lead_time_weeks']} weeks")
+        with c3:
+            st.metric("MOQ", f"{int(latest_item['MOQ']):,} pcs")
+        with c4:
+            st.metric("Payment terms", latest_item["Payment_terms"])
+
+        st.caption(
+            "Sample data only – use Quote Comparison and Award tabs for real sourcing events."
+        )
+        st.button("Accept Quote (demo)", help="Demo button – no backend action yet")
+
+    # ----- KPI tiles -----
+    st.subheader("Sourcing KPIs (Sample)")
+
+    total_items = award_df["Item_ID"].nunique()
+    total_spend = award_df["Total_landed_cost"].sum()
+    suppliers = award_df["Supplier"].nunique()
+    baseline_unit_price = 4.50
+    baseline_spend = baseline_unit_price * annual_volume * total_items
+    savings = baseline_spend - total_spend
+    savings_pct = (savings / baseline_spend * 100) if baseline_spend else 0
+
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.metric("Baseline spend", f"${baseline_spend:,.0f}")
+    with k2:
+        st.metric("Awarded spend", f"${total_spend:,.0f}")
+    with k3:
+        st.metric("Savings vs baseline", f"${savings:,.0f}", f"{savings_pct:,.1f}%")
+
+    # ----- Recent quotes and awards -----
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.subheader("Recent Quotes (Sample)")
+        st.dataframe(
+            full_df[
+                [
+                    "Supplier",
+                    "Item_ID",
+                    "Unit_price",
+                    "Lead_time_weeks",
+                    "Total_landed_cost",
+                ]
+            ],
+            use_container_width=True,
+        )
+
+    with col_right:
+        st.subheader("Award Summary (Sample)")
+        st.dataframe(
+            award_df[
+                [
+                    "Item_ID",
+                    "Supplier",
+                    "Total_landed_cost",
+                    "Lead_time_weeks",
+                    "MOQ",
+                    "Payment_terms",
+                ]
+            ],
+            use_container_width=True,
+        )
+
+    st.caption(
+        "Use this dashboard view for demos. Real events should go through the Quote Comparison and Award & Risk tabs."
+    )
 
 
 # ==============================
