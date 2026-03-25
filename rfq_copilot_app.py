@@ -9,7 +9,7 @@ st.markdown("*Procurement tool for RFQ generation, quote comparison, and award r
 section = st.sidebar.radio(
     "Navigate",
     [
-        "📊 Dashboard",
+        "💬 Instant Quote Assistant",
         "📋 RFQ Generator",
         "📊 Quote Comparison",
         "🏆 Award & Risk",
@@ -70,150 +70,71 @@ def compute_award_df(quotes_df, annual_volume, priority):
     return df, award_df
 
 # ==============================
-# SECTION 0 – DASHBOARD (SAMPLE DATA)
+# SECTION 0 – INSTANT QUOTE ASSISTANT (SAMPLE LOGIC)
 # ==============================
 
-if section == "📊 Dashboard":
-    st.header("📊 RFQ Copilot Dashboard")
+if section == "💬 Instant Quote Assistant":
+    st.header("💬 Instant Quote Assistant")
     st.markdown(
-        "High-level view of quotes, awards, and spend using sample data for demo."
+        "Describe what you need in natural language and the copilot will return a sample quote and availability statement."
     )
 
-    # ----- Sample data for dashboard -----
-    sample_quotes = pd.DataFrame(
-        [
-            {
-                "Supplier": "Supplier A",
-                "Item_ID": "ITEM-001",
-                "Unit_price": 4.20,
-                "Tooling_cost": 5000,
-                "Freight_cost": 1200,
-                "Other_charges": 0,
-                "MOQ": 5000,
-                "Lead_time_weeks": 7,
-                "Payment_terms": "Net 45",
-            },
-            {
-                "Supplier": "Supplier B",
-                "Item_ID": "ITEM-001",
-                "Unit_price": 4.05,
-                "Tooling_cost": 6500,
-                "Freight_cost": 1500,
-                "Other_charges": 0,
-                "MOQ": 6000,
-                "Lead_time_weeks": 9,
-                "Payment_terms": "Net 30",
-            },
-            {
-                "Supplier": "Supplier A",
-                "Item_ID": "ITEM-002",
-                "Unit_price": 3.10,
-                "Tooling_cost": 3000,
-                "Freight_cost": 800,
-                "Other_charges": 0,
-                "MOQ": 3000,
-                "Lead_time_weeks": 6,
-                "Payment_terms": "Net 45",
-            },
-            {
-                "Supplier": "Supplier B",
-                "Item_ID": "ITEM-002",
-                "Unit_price": 2.95,
-                "Tooling_cost": 3500,
-                "Freight_cost": 900,
-                "Other_charges": 0,
-                "MOQ": 4000,
-                "Lead_time_weeks": 8,
-                "Payment_terms": "Net 30",
-            },
-        ]
-    )
+    # 1) Simple static “catalog” just for demo
+    catalog = {
+        "7075": {"name": "7075-T651 plate", "unit_price": 95.0, "lead_weeks": 2, "stock": True},
+        "6061": {"name": "6061-T651 plate", "unit_price": 65.0, "lead_weeks": 1, "stock": True},
+    }
 
-    annual_volume = 50_000
-    priority = 0.5  # balanced cost vs speed
+    # 2) Chat history state
+    if "iq_messages" not in st.session_state:
+        st.session_state.iq_messages = []
 
-    # Reuse your existing helper to compute award + costs
-    full_df, award_df = compute_award_df(sample_quotes, annual_volume, priority)
+    # Show previous messages
+    for msg in st.session_state.iq_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    # ----- Top "instant quote" style card -----
-    st.subheader("Instant Quote Snapshot")
+    # 3) User input at the bottom
+    prompt = st.chat_input("Example: I need 7075 plate, 2\" x 12\" x 24\", qty 10 in 3–4 days")
 
-    latest_item = award_df.iloc[0]
-    with st.container(border=True):
-        st.markdown(
-            f"**Quote for {latest_item['Item_ID']} – Recommended: {latest_item['Supplier']}**"
-        )
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("Total landed cost", f"${latest_item['Total_landed_cost']:,.0f}")
-        with c2:
-            st.metric("Lead time", f"{latest_item['Lead_time_weeks']} weeks")
-        with c3:
-            st.metric("MOQ", f"{int(latest_item['MOQ']):,} pcs")
-        with c4:
-            st.metric("Payment terms", latest_item["Payment_terms"])
+    if prompt:
+        # Add user message
+        st.session_state.iq_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-        st.caption(
-            "Sample data only – use Quote Comparison and Award tabs for real sourcing events."
-        )
-        st.button("Accept Quote (demo)", help="Demo button – no backend action yet")
+        # --- Very simple parsing logic for demo only ---
+        material_key = "7075" if "7075" in prompt else "6061" if "6061" in prompt else None
 
-    # ----- KPI tiles -----
-    st.subheader("Sourcing KPIs (Sample)")
+        if material_key and material_key in catalog:
+            info = catalog[material_key]
 
-    total_items = award_df["Item_ID"].nunique()
-    total_spend = award_df["Total_landed_cost"].sum()
-    suppliers = award_df["Supplier"].nunique()
-    baseline_unit_price = 4.50
-    baseline_spend = baseline_unit_price * annual_volume * total_items
-    savings = baseline_spend - total_spend
-    savings_pct = (savings / baseline_spend * 100) if baseline_spend else 0
+            # crude qty parse: look for first integer
+            import re
 
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        st.metric("Baseline spend", f"${baseline_spend:,.0f}")
-    with k2:
-        st.metric("Awarded spend", f"${total_spend:,.0f}")
-    with k3:
-        st.metric("Savings vs baseline", f"${savings:,.0f}", f"{savings_pct:,.1f}%")
+            m = re.search(r"\b(\d+)\b", prompt)
+            qty = int(m.group(1)) if m else 10
 
-    # ----- Recent quotes and awards -----
-    col_left, col_right = st.columns(2)
+            reply = (
+                f"Here’s your quote for **{info['name']}** (sample logic):\n\n"
+                f"- Estimated unit price: **${info['unit_price']:.2f}**\n"
+                f"- Quantity: **{qty} pcs**\n"
+                f"- Estimated line value: **${info['unit_price'] * qty:,.2f}**\n"
+                f"- Lead time: **{info['lead_weeks']}–{info['lead_weeks'] + 1} weeks**\n"
+                f"- Availability: {'In stock window' if info['stock'] else 'Made to order'}\n\n"
+                "You can now capture this as a line in RFQ Generator or Quote Comparison."
+            )
+        else:
+            reply = (
+                "This is a demo assistant. I couldn’t match the material from your text.\n\n"
+                "Try including `7075` or `6061` in your request (e.g., *7075 plate, qty 10*)."
+            )
 
-    with col_left:
-        st.subheader("Recent Quotes (Sample)")
-        st.dataframe(
-            full_df[
-                [
-                    "Supplier",
-                    "Item_ID",
-                    "Unit_price",
-                    "Lead_time_weeks",
-                    "Total_landed_cost",
-                ]
-            ],
-            use_container_width=True,
-        )
+        # Show assistant reply
+        with st.chat_message("assistant"):
+            st.markdown(reply)
 
-    with col_right:
-        st.subheader("Award Summary (Sample)")
-        st.dataframe(
-            award_df[
-                [
-                    "Item_ID",
-                    "Supplier",
-                    "Total_landed_cost",
-                    "Lead_time_weeks",
-                    "MOQ",
-                    "Payment_terms",
-                ]
-            ],
-            use_container_width=True,
-        )
-
-    st.caption(
-        "Use this dashboard view for demos. Real events should go through the Quote Comparison and Award & Risk tabs."
-    )
+        st.session_state.iq_messages.append({"role": "assistant", "content": reply})
 
 
 # ==============================
