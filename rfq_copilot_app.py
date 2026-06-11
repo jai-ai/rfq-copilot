@@ -15,6 +15,7 @@ section = st.sidebar.radio(
         "🏆 Award & Risk",
         "📈 Sourcing Summary",
         "📊 Supplier Scorecard",
+	"📑 Audit Compliance Tracker",
     ],
 )
 
@@ -618,3 +619,240 @@ elif section == "📊 Supplier Scorecard":
         st.caption("Use this table during QBRs and sourcing decisions to justify supplier positioning.")
     else:
         st.info("Adjust ratings and weights, then click 'Calculate Supplier Scores'.")
+
+
+# ==============================
+# SECTION 6 – AUDIT COMPLIANCE TRACKER
+# ==============================
+
+elif section == "📑 Audit Compliance Tracker":
+    st.header("📑 Material Logistics Audit Compliance Tracker")
+    st.markdown(
+        "Automate monthly plant submission reviews, trend rework themes, and flag compliance gaps for leadership."
+    )
+
+    mode = st.radio(
+        "How do you want to provide audit data?",
+        ["Enter manually", "Upload CSV"],
+        key="audit_mode"
+    )
+
+    def evaluate_audit_df(df):
+        df = df.copy()
+
+        expected_cols = [
+            "Plant",
+            "Reporting_Month",
+            "Requirement",
+            "Attachment_Required",
+            "Attachment_Included",
+            "Attachment_Month_Match",
+            "Criteria_Met",
+            "Resubmission_Received",
+            "Rework_Reason",
+            "Auditor_Comments"
+        ]
+
+        missing = [c for c in expected_cols if c not in df.columns]
+        if missing:
+            st.error(f"Missing required columns: {', '.join(missing)}")
+            return None
+
+        for col in [
+            "Attachment_Required",
+            "Attachment_Included",
+            "Attachment_Month_Match",
+            "Criteria_Met",
+            "Resubmission_Received"
+        ]:
+            df[col] = df[col].astype(str).str.strip().str.upper()
+
+        def normalize_yes_no(x):
+            if x in ["YES", "Y", "TRUE", "1"]:
+                return "YES"
+            elif x in ["NO", "N", "FALSE", "0"]:
+                return "NO"
+            return "NO"
+
+        for col in [
+            "Attachment_Required",
+            "Attachment_Included",
+            "Attachment_Month_Match",
+            "Criteria_Met",
+            "Resubmission_Received"
+        ]:
+            df[col] = df[col].apply(normalize_yes_no)
+
+        def get_status(row):
+            if row["Attachment_Required"] == "YES" and row["Attachment_Included"] == "NO":
+                return "Non-Compliant"
+            if row["Attachment_Required"] == "YES" and row["Attachment_Month_Match"] == "NO":
+                return "Non-Compliant"
+            if row["Criteria_Met"] == "NO":
+                return "Non-Compliant"
+            return "Compliant"
+
+        df["Compliance_Status"] = df.apply(get_status, axis=1)
+
+        def get_issue_theme(row):
+            if row["Attachment_Required"] == "YES" and row["Attachment_Included"] == "NO":
+                return "Missing attachment"
+            if row["Attachment_Required"] == "YES" and row["Attachment_Month_Match"] == "NO":
+                return "Wrong reporting month"
+            if row["Criteria_Met"] == "NO":
+                if str(row["Rework_Reason"]).strip():
+                    return row["Rework_Reason"]
+                return "Criteria not met"
+            return "No issue"
+
+        df["Issue_Theme"] = df.apply(get_issue_theme, axis=1)
+
+        df["Needs_Rework"] = df["Compliance_Status"].apply(
+            lambda x: "YES" if x == "Non-Compliant" else "NO"
+        )
+
+        df["Rework_Open"] = df.apply(
+            lambda row: "YES" if row["Needs_Rework"] == "YES" and row["Resubmission_Received"] == "NO" else "NO",
+            axis=1
+        )
+
+        return df
+
+    def render_audit_results(df):
+        total = len(df)
+        compliant = (df["Compliance_Status"] == "Compliant").sum()
+        non_compliant = (df["Compliance_Status"] == "Non-Compliant").sum()
+        open_rework = (df["Rework_Open"] == "YES").sum()
+        compliance_rate = (compliant / total * 100) if total else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Total Reviews", total)
+        with c2:
+            st.metric("Compliant", compliant)
+        with c3:
+            st.metric("Non-Compliant", non_compliant)
+        with c4:
+            st.metric("Compliance Rate", f"{compliance_rate:.1f}%")
+
+        st.subheader("Detailed Audit Results")
+        st.dataframe(df, use_container_width=True)
+
+        st.subheader("Open Rework Summary")
+        st.metric("Open Rework Items", open_rework)
+
+        issue_summary = (
+            df[df["Compliance_Status"] == "Non-Compliant"]
+            .groupby("Issue_Theme")
+            .size()
+            .reset_index(name="Count")
+            .sort_values("Count", ascending=False)
+        )
+
+        plant_summary = (
+            df.groupby("Plant")["Compliance_Status"]
+            .apply(lambda x: (x == "Compliant").mean() * 100)
+            .reset_index(name="Compliance_%")
+            .sort_values("Compliance_%", ascending=True)
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Top Rework Themes")
+            if not issue_summary.empty:
+                st.dataframe(issue_summary, use_container_width=True)
+                st.bar_chart(issue_summary.set_index("Issue_Theme")["Count"])
+            else:
+                st.success("No rework themes found.")
+
+        with col2:
+            st.subheader("Plant Compliance %")
+            st.dataframe(plant_summary, use_container_width=True)
+            st.bar_chart(plant_summary.set_index("Plant")["Compliance_%"])
+
+        st.subheader("Leadership Summary")
+        if not issue_summary.empty:
+            top_issue = issue_summary.iloc[0]["Issue_Theme"]
+            top_issue_count = issue_summary.iloc[0]["Count"]
+            st.info(
+                f"Out of {total} reviews, {compliant} were compliant and {non_compliant} were non-compliant. "
+                f"Current compliance rate is {compliance_rate:.1f}%. "
+                f"The top rework issue is '{top_issue}' with {top_issue_count} occurrences. "
+                f"There are currently {open_rework} open rework items requiring follow-up."
+            )
+        else:
+            st.info(
+                f"Out of {total} reviews, {compliant} were compliant and {non_compliant} were non-compliant. "
+                f"Current compliance rate is {compliance_rate:.1f}%. No rework themes were identified."
+            )
+
+    if mode == "Enter manually":
+        st.subheader("Monthly Plant Audit Reviews (manual entry)")
+        default_audit = pd.DataFrame([
+            {
+                "Plant": "Plant A",
+                "Reporting_Month": "2026-05",
+                "Requirement": "Premium Freight Validation",
+                "Attachment_Required": "YES",
+                "Attachment_Included": "YES",
+                "Attachment_Month_Match": "YES",
+                "Criteria_Met": "YES",
+                "Resubmission_Received": "NO",
+                "Rework_Reason": "",
+                "Auditor_Comments": "Compliant submission"
+            },
+            {
+                "Plant": "Plant B",
+                "Reporting_Month": "2026-05",
+                "Requirement": "Past Due Orders Review",
+                "Attachment_Required": "YES",
+                "Attachment_Included": "NO",
+                "Attachment_Month_Match": "NO",
+                "Criteria_Met": "NO",
+                "Resubmission_Received": "NO",
+                "Rework_Reason": "Missing monthly attachment",
+                "Auditor_Comments": "Request resubmission"
+            },
+            {
+                "Plant": "Plant C",
+                "Reporting_Month": "2026-05",
+                "Requirement": "Supplier Expedite Report",
+                "Attachment_Required": "YES",
+                "Attachment_Included": "YES",
+                "Attachment_Month_Match": "NO",
+                "Criteria_Met": "NO",
+                "Resubmission_Received": "YES",
+                "Rework_Reason": "Wrong reporting month",
+                "Auditor_Comments": "Resubmitted but still incorrect"
+            },
+        ])
+
+        audit_input = st.data_editor(default_audit, num_rows="dynamic", use_container_width=True)
+
+        if st.button("Run Audit Review"):
+            result_df = evaluate_audit_df(audit_input)
+            if result_df is not None:
+                render_audit_results(result_df)
+
+    elif mode == "Upload CSV":
+        st.subheader("Upload Monthly Plant Audit File")
+        st.caption(
+            "Template columns: Plant, Reporting_Month, Requirement, Attachment_Required, "
+            "Attachment_Included, Attachment_Month_Match, Criteria_Met, "
+            "Resubmission_Received, Rework_Reason, Auditor_Comments"
+        )
+
+        uploaded_audit = st.file_uploader("Upload audit CSV", type=["csv"], key="audit_upload")
+
+        if uploaded_audit is not None:
+            audit_input = pd.read_csv(uploaded_audit)
+            st.dataframe(audit_input, use_container_width=True)
+
+            if st.button("Run Audit Review from File"):
+                result_df = evaluate_audit_df(audit_input)
+                if result_df is not None:
+                    render_audit_results(result_df)
+        else:
+            st.info("Upload a CSV file to enable audit review.")
+
