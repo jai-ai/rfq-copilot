@@ -654,110 +654,217 @@ elif section == "📑 Audit Compliance Tracker":
 
     def evaluate_audit_df(df):
         df = df.copy()
-
         missing = [c for c in required_columns if c not in df.columns]
         if missing:
             st.error(f"Missing required columns: {', '.join(missing)}")
             return None
 
-        df["Compliance Status"] = df["Compliance Status"].astype(str).str.strip()
-        df["Issue Theme"] = df["Issue Theme"].astype(str).str.strip()
-        df["Rework Required"] = df["Rework Required"].astype(str).str.strip().str.upper()
-        df["Resubmission Received"] = df["Resubmission Received"].astype(str).str.strip().str.upper()
-        df["Attachment Included"] = df["Attachment Included"].astype(str).str.strip().str.upper()
+        for col in ["Attachment Included", "Compliance Status", "Issue Theme", "Rework Required", "Resubmission Received"]:
+            df[col] = df[col].astype(str).str.strip()
 
-        def normalize_flag(x):
-            if x in ["YES", "Y", "TRUE", "1"]:
-                return "YES"
-            if x in ["NO", "N", "FALSE", "0"]:
-                return "NO"
-            return x
+        df["Attachment Included"] = df["Attachment Included"].str.upper()
+        df["Rework Required"] = df["Rework Required"].str.upper()
+        df["Resubmission Received"] = df["Resubmission Received"].str.upper()
 
-        df["Rework Required"] = df["Rework Required"].apply(normalize_flag)
-        df["Resubmission Received"] = df["Resubmission Received"].apply(normalize_flag)
-        df["Attachment Included"] = df["Attachment Included"].apply(normalize_flag)
+        df["Compliance Status"] = df["Compliance Status"].apply(
+            lambda x: "Compliant" if str(x).strip().lower() == "compliant" else "Non-Compliant"
+        )
 
-        def derive_status(row):
-            if row["Attachment Included"] == "NO":
-                return "Non-Compliant"
-            if str(row["Compliance Status"]).strip() == "":
-                return "Compliant"
-            return row["Compliance Status"]
+        df["Issue Theme"] = df["Issue Theme"].apply(
+            lambda x: x if str(x).strip() not in ["", "nan", "none"] else "No issue"
+        )
 
-        df["Compliance Status"] = df.apply(derive_status, axis=1)
-
-        def derive_issue(row):
-            if row["Compliance Status"] == "Compliant":
-                return "No issue"
-            if str(row["Issue Theme"]).strip() in ["", "nan", "None"]:
-                return "Review required"
-            return row["Issue Theme"]
-
-        df["Issue Theme"] = df.apply(derive_issue, axis=1)
-
-        df["Rework Required"] = df["Rework Required"].apply(lambda x: "YES" if x == "YES" or df["Compliance Status"].eq("Non-Compliant").any() else "NO")
-        df["Rework Required"] = df["Compliance Status"].apply(lambda x: "YES" if x == "Non-Compliant" else "NO")
+        df["Rework Required"] = df["Compliance Status"].apply(
+            lambda x: "YES" if x == "Non-Compliant" else "NO"
+        )
 
         return df
 
     def render_results(df):
         total = len(df)
-        compliant = (df["Compliance Status"] == "Compliant").sum()
-        non_compliant = (df["Compliance Status"] == "Non-Compliant").sum()
-        compliance_rate = (compliant / total * 100) if total else 0
+        compliant_df = df[df["Compliance Status"] == "Compliant"].copy()
+        non_compliant_df = df[df["Compliance Status"] == "Non-Compliant"].copy()
+        rework_df = df[df["Rework Required"] == "YES"].copy()
+
+        compliant_count = len(compliant_df)
+        non_compliant_count = len(non_compliant_df)
+        rework_count = len(rework_df)
+        compliance_rate = (compliant_count / total * 100) if total else 0
         open_rework = ((df["Rework Required"] == "YES") & (df["Resubmission Received"] == "NO")).sum()
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("Total Submissions", total)
         with c2:
-            st.metric("Compliant", compliant)
+            st.metric("Compliant", compliant_count)
         with c3:
-            st.metric("Non-Compliant", non_compliant)
+            st.metric("Non-Compliant", non_compliant_count)
         with c4:
             st.metric("Compliance Rate", f"{compliance_rate:.1f}%")
 
-        st.subheader("Audit Results")
-        st.dataframe(df, use_container_width=True)
+        st.subheader("Power BI Style Dashboard")
+
+        tab1, tab2, tab3 = st.tabs(["Compliant", "Non-Compliant", "Rework"])
+
+        with tab1:
+            st.markdown("### Compliant")
+            c_left, c_right = st.columns(2)
+
+            with c_left:
+                comp_by_plant = compliant_df.groupby("Plant Name").size().reset_index(name="Count")
+                if not comp_by_plant.empty:
+                    fig1 = px.bar(
+                        comp_by_plant,
+                        x="Plant Name",
+                        y="Count",
+                        color="Plant Name",
+                        title="Compliant Submissions by Plant"
+                    )
+                    st.plotly_chart(fig1, use_container_width=True)
+                else:
+                    st.info("No compliant records.")
+
+            with c_right:
+                comp_by_month = compliant_df.groupby("Reporting Month").size().reset_index(name="Count")
+                if not comp_by_month.empty:
+                    fig2 = px.line(
+                        comp_by_month.sort_values("Reporting Month"),
+                        x="Reporting Month",
+                        y="Count",
+                        markers=True,
+                        title="Compliant Trend by Month"
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+
+            comp_region = compliant_df.groupby("Region").size().reset_index(name="Count")
+            if not comp_region.empty:
+                fig3 = px.pie(
+                    comp_region,
+                    names="Region",
+                    values="Count",
+                    hole=0.4,
+                    title="Compliant by Region"
+                )
+                st.plotly_chart(fig3, use_container_width=True)
+
+        with tab2:
+            st.markdown("### Non-Compliant")
+            n_left, n_right = st.columns(2)
+
+            with n_left:
+                issue_counts = (
+                    non_compliant_df.groupby("Issue Theme")
+                    .size()
+                    .reset_index(name="Count")
+                    .sort_values("Count", ascending=False)
+                )
+                if not issue_counts.empty:
+                    fig4 = px.bar(
+                        issue_counts,
+                        x="Issue Theme",
+                        y="Count",
+                        color="Issue Theme",
+                        title="Non-Compliant by Issue Theme"
+                    )
+                    st.plotly_chart(fig4, use_container_width=True)
+                else:
+                    st.info("No non-compliant records.")
+
+            with n_right:
+                non_comp_by_plant = (
+                    non_compliant_df.groupby("Plant Name")
+                    .size()
+                    .reset_index(name="Count")
+                    .sort_values("Count", ascending=False)
+                )
+                if not non_comp_by_plant.empty:
+                    fig5 = px.bar(
+                        non_comp_by_plant,
+                        x="Plant Name",
+                        y="Count",
+                        color="Plant Name",
+                        title="Non-Compliant by Plant"
+                    )
+                    st.plotly_chart(fig5, use_container_width=True)
+
+            non_comp_region = non_compliant_df.groupby("Region").size().reset_index(name="Count")
+            if not non_comp_region.empty:
+                fig6 = px.pie(
+                    non_comp_region,
+                    names="Region",
+                    values="Count",
+                    hole=0.4,
+                    title="Non-Compliant by Region"
+                )
+                st.plotly_chart(fig6, use_container_width=True)
+
+        with tab3:
+            st.markdown("### Rework")
+            r_left, r_right = st.columns(2)
+
+            with r_left:
+                rework_theme = (
+                    rework_df.groupby("Issue Theme")
+                    .size()
+                    .reset_index(name="Count")
+                    .sort_values("Count", ascending=False)
+                )
+                if not rework_theme.empty:
+                    fig7 = px.bar(
+                        rework_theme,
+                        x="Issue Theme",
+                        y="Count",
+                        color="Issue Theme",
+                        title="Rework by Theme"
+                    )
+                    st.plotly_chart(fig7, use_container_width=True)
+                else:
+                    st.info("No rework items.")
+
+            with r_right:
+                resub_status = (
+                    rework_df.groupby("Resubmission Received")
+                    .size()
+                    .reset_index(name="Count")
+                )
+                if not resub_status.empty:
+                    fig8 = px.pie(
+                        resub_status,
+                        names="Resubmission Received",
+                        values="Count",
+                        hole=0.4,
+                        title="Rework Status"
+                    )
+                    st.plotly_chart(fig8, use_container_width=True)
+
+            st.metric("Open Rework Items", open_rework)
 
         st.subheader("Leadership Summary")
         issue_summary = (
-            df[df["Compliance Status"] == "Non-Compliant"]
-            .groupby("Issue Theme")
+            non_compliant_df.groupby("Issue Theme")
             .size()
             .reset_index(name="Count")
             .sort_values("Count", ascending=False)
         )
 
-        plant_summary = (
-            df.groupby("Plant Name")["Compliance Status"]
-            .apply(lambda s: (s == "Compliant").mean() * 100)
-            .reset_index(name="Compliance %")
-            .sort_values("Compliance %", ascending=True)
-        )
+        if not issue_summary.empty:
+            top_issue = issue_summary.iloc[0]["Issue Theme"]
+            top_count = issue_summary.iloc[0]["Count"]
+            st.info(
+                f"Out of {total} submissions, {compliant_count} were compliant and {non_compliant_count} were non-compliant. "
+                f"The top rework issue is '{top_issue}' with {top_count} occurrences. "
+                f"There are {open_rework} open rework items requiring follow-up."
+            )
+        else:
+            st.info(
+                f"Out of {total} submissions, {compliant_count} were compliant and {non_compliant_count} were non-compliant. "
+                f"No recurring rework themes were identified."
+            )
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Top Rework Themes")
-            if not issue_summary.empty:
-                st.dataframe(issue_summary, use_container_width=True)
-                st.bar_chart(issue_summary.set_index("Issue Theme")["Count"])
-            else:
-                st.success("No rework themes identified.")
-
-        with col2:
-            st.subheader("Plant Compliance %")
-            st.dataframe(plant_summary, use_container_width=True)
-            st.bar_chart(plant_summary.set_index("Plant Name")["Compliance %"])
-
-        st.info(
-            f"Out of {total} submissions, {compliant} were compliant and {non_compliant} were non-compliant. "
-            f"There are currently {open_rework} open rework items requiring follow-up."
-        )
+        st.subheader("Detailed Audit Table")
+        st.dataframe(df, use_container_width=True)
 
     if mode == "Enter manually":
-        st.subheader("Manual Audit Entry")
         default_audit = pd.DataFrame([
             {
                 "Submission ID": "SUB-0001",
@@ -816,7 +923,7 @@ elif section == "📑 Audit Compliance Tracker":
             if result_df is not None:
                 render_results(result_df)
 
-    elif mode == "Upload CSV":
+    else:
         st.subheader("Upload Audit CSV")
         st.caption("Use the same columns shown in the manual entry table.")
         uploaded_file = st.file_uploader("Upload audit file", type=["csv"], key="audit_upload")
@@ -831,4 +938,3 @@ elif section == "📑 Audit Compliance Tracker":
                     render_results(result_df)
         else:
             st.info("Upload a CSV file to start the audit review.")
-
